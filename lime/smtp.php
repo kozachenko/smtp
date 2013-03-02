@@ -90,7 +90,7 @@ class SMTP {
 	 * @access public
 	 * @var string
 	 */
-	public $charset = '7bit';
+	public $encoding = '7bit';
 	
 	/**
 	 * Debugging logs
@@ -116,6 +116,10 @@ class SMTP {
 	 */
 	private $errorMessage = '';
 	
+	/**
+	 * New line
+	 * @var string
+	 */
 	const CRLF = "\r\n";
 	
 	/**
@@ -124,22 +128,15 @@ class SMTP {
 	 * @access	public
 	 * 
 	 * @param	string	$host
-	 * @param	bool	$auth
-	 * @param	string	$username
-	 * @param	string	$password
 	 * @param	int		$port
 	 * @param	string	$secure		none | tls | ssl
 	 */
-	public function __construct($host, $auth=FALSE, $username=NULL, $password=NULL, $port=25, $secure='none')
+	public function __construct($host = null, $port=25, $secure='none')
 	{
 		$this->log('SMTP class initialized');
 		
-		$this->host 	= $host;
-		$this->auth 	= $auth;
-		$this->username	= $username;
-		$this->password	= $password;
-		$this->port		= $port;
-		$this->secure	= $secure; 
+		if( $host != null )
+			$this->connect($host, $port=25, $secure='none');
 	}
 	
 	/**
@@ -147,23 +144,101 @@ class SMTP {
 	 * 
 	 * @return SMTP
 	 */
-	public function connect()
+	public function connect($host, $port=25, $secure='none')
 	{
+		$this->host 	= $host;
+		$this->port		= $port;
+		$this->secure	= $secure;
+		
 		$this->log('Trying to connect host');
 		
-		if( $this->secure != 'none' ) {
-			$this->host = $this->secure . '://' . $this->host;
+		if( $this->secure == 'ssl' ) {
+			$host = 'ssl://' . $this->host;
+		} else {
+			$host = $this->host;
 		}
 		
-		$this->connection = fsockopen($this->host, $this->port, $this->errorNo, $this->errorMessage, $this->timeout);
+		$this->connection = fsockopen($host, $this->port, $this->errorNo, $this->errorMessage, $this->timeout);
 		
 		if(!$this->connection) {
 			$this->log('Unable to connect host : '. $this->host);
+			return $this;
 		} else {
 			$this->log('Connection successful');
 		}
 		
+		// Gets greeting
+		$this->get();
+		
+		// Ehlo package
+		$this->put('EHLO '.$this->host );
+		
+		if ($this->secure == 'tls') {
+			$this->put('STARTTLS');
+			
+			stream_socket_enable_crypto($this->connection, TRUE, STREAM_CRYPTO_METHOD_TLS_CLIENT);
+			
+			$this->put('EHLO '.$this->host );
+		}
+		
 		return $this;
+	}
+	
+	/**
+	 * Login to server
+	 * @param string $username
+	 * @param string $password
+	 */
+	public function auth($username = null, $password = null)
+	{
+		$this->username = $username;
+		$this->password = $password;
+		
+		$this->put( 'AUTH LOGIN' );
+
+		// Sends username
+		$this->put( base64_encode($this->username) );
+		
+		// Sends password
+		$this->put( base64_encode($this->password) );
+	}
+	
+	/**
+	 * Send e-mail
+	 * @param string $to
+	 * @param string $subject
+	 * @param string $body
+	 */
+	function send($to, $subject, $body, $from = null)
+	{
+		if( !$from ) {
+			$from = $this->username;
+		}
+		
+		$boundary = md5(uniqid(time()));
+		
+		// Sent mail from
+		$this->put('MAIL FROM:<'.$from.'>');
+		
+		// Sent to
+		$this->put('RCPT TO:<'.$to.'>');
+		
+		$this->put('DATA');
+				
+		$headers = array(
+			'MIME-Version: 1.0',
+			'Content-type: text/html; charset='. $this->charset,
+			'TO:<'. $to .'>',
+			'FROM:<'. $from .'>',
+			'SUBJECT:'. $subject .''. self::CRLF . self::CRLF,
+			$body . self::CRLF . '.'  . self::CRLF
+		);
+		
+		$data = implode(self::CRLF, $headers);
+		
+		$this->put($data);
+		
+		$this->put('QUIT');
 	}
 	
 	/**
@@ -172,9 +247,18 @@ class SMTP {
 	 * @param	string $data
 	 * @return	SMTP
 	 */
-	public function put($data)
+	public function put($data, $crlfCount = 1)
 	{
+		$crlf = '';
+		for( $i = 0; $i<$crlfCount; $i++ )
+			$crlf .= self::CRLF;
 		
+		$this->log('Puts data: '. $data);
+		
+		fputs($this->connection, $data . $crlf);
+		
+		// Gets response
+		$this->get();
 	}
 	
 	/**
@@ -183,9 +267,18 @@ class SMTP {
 	 * @param	int	 $length
 	 * @return	SMTP
 	 */
-	public function get($length = 4096)
+	public function get($length = 1024)
 	{
+		$response = '';
+		while ($str = fgets($this->connection, $length))
+		{
+			$response .= $str;
+			if (substr($str, 3, 1) === ' ') break;
+		}
 		
+		$this->log('Gets data: '. $response);
+		
+		return $response;
 	}
 	
 	/**
@@ -213,6 +306,18 @@ class SMTP {
 	public function getLogs()
 	{
 		return $this->logs;
+	}
+	
+	/**
+	 * Gets error
+	 * @return multitype:number string
+	 */
+	public function getError()
+	{
+		return array(
+			'code' => $this->errorNo,
+			'message' => $this->errorMessage
+		);
 	}
 	
 	/**
