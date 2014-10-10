@@ -136,7 +136,7 @@ class SMTP {
 		$this->log('SMTP class initialized');
 		
 		if( $host != null )
-			$this->connect($host, $port=25, $secure='none');
+			$this->connect($host, $port, $secure);
 	}
 	
 	/**
